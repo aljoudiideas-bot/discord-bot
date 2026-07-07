@@ -5,3 +5,5 @@ server_data.json
 discloud.config
 *.zip
 vc_bot.py
+!vc_bot/discloud.config
+!vc_bot/vc_bot.py

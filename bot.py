@@ -1772,59 +1772,135 @@ async def giveaway_end(ctx, message_id: str):
     await ctx.send("✅ تم إنهاء السحب، جاري إعلان الفائز...")
 
 # ==================== نظام التذاكر ====================
-TICKET_CATEGORY_NAME = "🎫 التذاكر"
+TICKET_CATEGORY_NAME = " التذاكر"
 
-@bot.command(name="new")
-async def new_ticket(ctx, *, reason="لا يوجد"):
-    """فتح تذكرة دعم: !new سبب المشكلة"""
-    guild = ctx.guild
+class TicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label=" دعم فني", style=discord.ButtonStyle.primary, custom_id="ticket_support")
+    async def support_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await create_ticket(interaction, " دعم فني")
+
+    @discord.ui.button(label=" شراكة", style=discord.ButtonStyle.secondary, custom_id="ticket_partner")
+    async def partner_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await create_ticket(interaction, " شراكة")
+
+    @discord.ui.button(label=" بلاغ", style=discord.ButtonStyle.danger, custom_id="ticket_report")
+    async def report_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await create_ticket(interaction, " بلاغ عن عضو")
+
+    @discord.ui.button(label=" استفسار", style=discord.ButtonStyle.success, custom_id="ticket_question")
+    async def question_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await create_ticket(interaction, " استفسار")
+
+class CloseView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label=" إغلاق التذكرة", style=discord.ButtonStyle.danger, custom_id="close_ticket")
+    async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.channel.name.startswith("ticket-"):
+            return await interaction.response.send_message(" هذه ليست قناة تذكرة", ephemeral=True)
+        await interaction.response.send_message(" جاري الإغلاق خلال 5 ثوان...")
+        await log_ticket(interaction.channel)
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
+
+async def create_ticket(interaction, ticket_type):
+    guild = interaction.guild
+    user = interaction.user
+    data = load_data()
+    gid = str(guild.id)
+    if "ticket_counter" not in data:
+        data["ticket_counter"] = {}
+    if gid not in data["ticket_counter"]:
+        data["ticket_counter"][gid] = 0
+    data["ticket_counter"][gid] += 1
+    num = data["ticket_counter"][gid]
+    save_data(data)
     category = discord.utils.get(guild.categories, name=TICKET_CATEGORY_NAME)
-    if not category:
-        mod_role = discord.utils.get(guild.roles, name="🟡 Mod")
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            ctx.author: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-        }
-        if mod_role:
-            overwrites[mod_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
-        try:
-            category = await guild.create_category(TICKET_CATEGORY_NAME, overwrites=overwrites)
-        except:
-            return await ctx.send("❌ صلاحياتي لا تسمح بإنشاء قسم التذاكر")
-
-    existing = discord.utils.get(guild.text_channels, name=f"ticket-{ctx.author.name}".lower())
-    if existing:
-        return await ctx.send(f"❌ لديك تذكرة مفتوحة بالفعل: {existing.mention}")
-
-    mod_role = discord.utils.get(guild.roles, name="🟡 Mod")
+    mod_role = discord.utils.get(guild.roles, name=" Mod")
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=False),
-        ctx.author: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+        user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
     }
     if mod_role:
         overwrites[mod_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
+    ch_name = f"ticket-{num:04d}"
+    if category:
+        ticket_ch = await guild.create_text_channel(ch_name, category=category, overwrites=overwrites, topic=f"{ticket_type} - {user.name}")
+    else:
+        ticket_ch = await guild.create_text_channel(ch_name, overwrites=overwrites, topic=f"{ticket_type} - {user.name}")
+    colors = {" دعم فني": 0x3498DB, " شراكة": 0x9B59B6, " بلاغ عن عضو": 0xE74C3C, " استفسار": 0x2ECC71}
+    embed = discord.Embed(title=ticket_type, description=f"مرحباً {user.mention}\nسيتم الرد عليك بأسرع وقت", color=colors.get(ticket_type, 0x3498DB))
+    embed.set_footer(text=f"تذكرة #{num:04d}")
+    await ticket_ch.send(embed=embed, view=CloseView())
+    await interaction.response.send_message(f" تم فتح التذكرة: {ticket_ch.mention}", ephemeral=True)
 
-    ch_name = f"ticket-{ctx.author.name}".lower().replace(" ", "-")
-    ticket_ch = await guild.create_text_channel(
-        ch_name, category=category, overwrites=overwrites,
-        topic=f"تذكرة {ctx.author.name} - {reason}"
-    )
-    embed = discord.Embed(
-        title="🎫 تذكرة دعم",
-        description=f"مرحباً {ctx.author.mention}\nسيتم الرد عليك بأسرع وقت\nالسبب: {reason}",
-        color=0x3498DB
-    )
-    embed.add_field(name="!close", value="لإغلاق التذكرة", inline=False)
-    await ticket_ch.send(embed=embed)
-    await ctx.send(f"✅ تم فتح التذكرة: {ticket_ch.mention}")
+async def log_ticket(channel):
+    data = load_data()
+    gid = str(channel.guild.id)
+    log_id = data.get("config", {}).get(gid, {}).get("ticket_log")
+    if not log_id:
+        return
+    log_ch = channel.guild.get_channel(log_id)
+    if not log_ch:
+        return
+    msgs = []
+    async for m in channel.history(limit=100, oldest_first=True):
+        if not m.author.bot:
+            msgs.append(f"{m.author.name}: {m.content}")
+    transcript = "\n".join(msgs) if msgs else "لا توجد رسائل"
+    embed = discord.Embed(title=f"سجل تذكرة {channel.name}", description=f"النوع: {channel.topic}", color=0x95A5A6)
+    if len(transcript) > 1000:
+        transcript = transcript[:1000] + "..."
+    embed.add_field(name="الرسائل", value=transcript or "لا يوجد", inline=False)
+    await log_ch.send(embed=embed)
+
+@bot.command(name="ticketsetup")
+@commands.has_permissions(administrator=True)
+async def ticket_setup(ctx):
+    """إنشاء لوحة التذاكر بالأزرار"""
+    embed = discord.Embed(title="نظام التذاكر", description="اختر نوع التذكرة من الأزرار أدناه", color=0x3498DB)
+    await ctx.send(embed=embed, view=TicketView())
+    await ctx.send(" تم إنشاء لوحة التذاكر")
+
+@bot.command(name="ticketlog")
+@commands.has_permissions(administrator=True)
+async def ticket_log_setup(ctx, channel: discord.TextChannel = None):
+    """تعيين قناة حفظ سجل التذاكر"""
+    if not channel:
+        return await ctx.send(" استخدم: `!ticketlog #القناة`")
+    data = load_data()
+    gid = str(ctx.guild.id)
+    if "config" not in data:
+        data["config"] = {}
+    if gid not in data["config"]:
+        data["config"][gid] = {}
+    data["config"][gid]["ticket_log"] = channel.id
+    save_data(data)
+    await ctx.send(f" تم تعيين {channel.mention} لحفظ سجل التذاكر")
+
+@bot.command(name="new")
+async def new_ticket(ctx, *, reason="لا يوجد"):
+    """فتح تذكرة دعم: !new سبب"""
+    class FakeInteraction:
+        def __init__(self, user, guild, channel):
+            self.user = user; self.guild = guild; self.channel = channel; self.response = FakeResponse()
+    class FakeResponse:
+        async def send_message(self, *a, **kw): await ctx.send(*a, **kw)
+        async def is_done(self): return True
+    await create_ticket(FakeInteraction(ctx.author, ctx.guild, ctx.channel), " دعم فني")
 
 @bot.command(name="close")
 @commands.has_permissions(manage_channels=True)
 async def close_ticket(ctx):
     """إغلاق التذكرة الحالية"""
     if not ctx.channel.name.startswith("ticket-"):
-        return await ctx.send("❌ هذه ليست قناة تذكرة")
-    await ctx.send("🔒 جاري إغلاق التذكرة خلال 5 ثوان...")
+        return await ctx.send(" هذه ليست قناة تذكرة")
+    await ctx.send(" جاري إغلاق التذكرة خلال 5 ثوان...")
+    await log_ticket(ctx.channel)
     await asyncio.sleep(5)
     await ctx.channel.delete()
 
@@ -1833,9 +1909,9 @@ async def close_ticket(ctx):
 async def add_ticket_user(ctx, member: discord.Member):
     """إضافة عضو للتذكرة: !adduser @العضو"""
     if not ctx.channel.name.startswith("ticket-"):
-        return await ctx.send("❌ هذه ليست قناة تذكرة")
+        return await ctx.send(" هذه ليست قناة تذكرة")
     await ctx.channel.set_permissions(member, read_messages=True, send_messages=True)
-    await ctx.send(f"✅ تم إضافة {member.mention} للتذكرة")
+    await ctx.send(f" تم إضافة {member.mention} للتذكرة")
 
 # ==================== نظام الشركاء ====================
 @bot.command(name="partnersetup")
