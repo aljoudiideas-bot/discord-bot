@@ -5,12 +5,16 @@ import os
 import random
 import asyncio
 import time
+import re
 from datetime import datetime, timedelta
 import urllib.request
+import urllib.error
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import io
 
 # ==================== التهيئة ====================
+from dotenv import load_dotenv
+load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     print("❌ خطأ: لم يتم تعيين BOT_TOKEN في متغيرات البيئة")
@@ -505,6 +509,18 @@ async def on_message(message):
     guild_id = str(message.guild.id)
     user_id = str(message.author.id)
 
+    # ===== AFK check =====
+    if data.get("afk", {}).get(guild_id, {}).get(user_id):
+        del data["afk"][guild_id][user_id]
+        save_data(data)
+        try:
+            await message.author.edit(nick=None)
+        except:
+            pass
+        await message.reply(f"🎉 أهلاً بعودتك {message.author.mention}! تم إزالة AFK")
+        await bot.process_commands(message)
+        return
+
     # ===== Auto-mod =====
     guild_mod = data.get("automod", {}).get(guild_id, {})
     if guild_mod.get("enabled") and not message.author.guild_permissions.administrator:
@@ -588,11 +604,20 @@ async def on_message(message):
             data["coins"][guild_id][user_id] = 0
         data["coins"][guild_id][user_id] += coin_gain
 
+    # ===== AFK mention =====
+    for mention in message.mentions:
+        if mention.bot:
+            continue
+        mid = str(mention.id)
+        if data.get("afk", {}).get(guild_id, {}).get(mid):
+            info = data["afk"][guild_id][mid]
+            await message.reply(f"💤 {mention.display_name} AFK\n📌 السبب: {info['reason']}")
+
     # Auto-reply check
     guild_replies = data.get("replies", {}).get(guild_id, {})
     msg_lower = message.content.lower()
     for trigger, response_text in guild_replies.items():
-        if trigger in msg_lower:
+        if re.search(rf"\b{re.escape(trigger)}\b", msg_lower):
             try:
                 await message.reply(response_text.format(user=message.author.mention))
             except:
@@ -2504,7 +2529,6 @@ REPLY_LIBRARY = {
     "بوتنا": "فدوة {user} ❤️🤖",
     "واش": "واش {user} مالك؟ 😄",
     "وشو": "أهلاً {user} وشو في؟ 😄",
-    "وش": "وش في {user}؟ 😄",
     "ايوه": "أيوه {user} 😊",
     "ايوا": "ايوا {user} 😊",
     "اي": "أي {user} 😊",
@@ -3919,6 +3943,85 @@ async def on_command_error(ctx, error):
     else:
         await ctx.send(f"❌ خطأ: `{error}`")
         print(error)
+
+# ==================== نظام AFK ====================
+@bot.command(name="afk")
+async def set_afk(ctx, *, reason="مشغول حالياً"):
+    """ضبط نفسك AFK: !afk سبب"""
+    data = load_data()
+    gid = str(ctx.guild.id)
+    uid = str(ctx.author.id)
+    if "afk" not in data:
+        data["afk"] = {}
+    if gid not in data["afk"]:
+        data["afk"][gid] = {}
+    data["afk"][gid][uid] = {"reason": reason, "name": ctx.author.display_name}
+    save_data(data)
+    try:
+        await ctx.author.edit(nick=f"[AFK] {ctx.author.display_name}")
+    except:
+        pass
+    await ctx.send(f"✅ {ctx.author.mention} تم ضبطك AFK\n📌 السبب: {reason}")
+
+# ==================== الذكاء الاصطناعي ====================
+GEMINI_KEY = os.getenv("GEMINI_KEY")
+
+@bot.command(name="ask")
+async def ask_ai(ctx, *, question):
+    """اسأل الذكاء الاصطناعي: !ask سؤالك"""
+    if not GEMINI_KEY:
+        return await ctx.send("❌ الذكاء الاصطناعي غير مفعل")
+    async with ctx.typing():
+        try:
+            import json as _json
+            data = _json.dumps({"contents": [{"parts": [{"text": f"أجب بالعربية: {question}"}]}]}).encode()
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
+            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+            resp = urllib.request.urlopen(req, timeout=20)
+            result = _json.loads(resp.read())
+            text = result["candidates"][0]["content"]["parts"][0]["text"][:1900]
+            await ctx.reply(text)
+        except urllib.error.HTTPError as e:
+            msg = str(e.code)
+            if e.code == 429:
+                msg = "تم تجاوز الحد المسموح، انتظر دقيقة وحاول مرة أخرى"
+            await ctx.send(f"❌ {msg}")
+        except Exception as e:
+            await ctx.send(f"❌ خطأ: {str(e)[:200]}")
+
+# ==================== إضافة الرومات الفكاهية ====================
+FUN_CHANNELS = [
+    ("pov-scenarios", "🎭 شاركنا سيناريو وهمي بثلاث كلمات والناس تكمل", "📝"),
+    ("اقتباسات-مضحكة", "😂 شارك اقتباس مضحك صار معك", "📝"),
+    ("وش-تصير-لو", "🤔 أسئلة افتراضية: وش تصير لو...؟", "📝"),
+    ("rate-my-xxx", "⭐ شارك لعبتك/جهازك/أكلك والناس تقيم", "📝"),
+]
+
+@bot.command(name="addfun")
+@commands.has_permissions(administrator=True)
+async def add_fun_channels(ctx):
+    """إضافة الرومات الفكاهية: !addfun"""
+    guild = ctx.guild
+    cat = discord.utils.get(guild.categories, name="🎭 فرفشة")
+    if not cat:
+        cat = await guild.create_category("🎭 فرفشة")
+        await ctx.send("✅ تم إنشاء قسم 🎭 فرفشة")
+    added = 0
+    for name, topic, _ in FUN_CHANNELS:
+        existing = discord.utils.get(cat.channels, name=name)
+        if not existing:
+            await guild.create_text_channel(name, category=cat, topic=topic)
+            added += 1
+            await asyncio.sleep(0.5)
+    if added:
+        await ctx.send(f"✅ تم إضافة {added} روم فكاهي")
+        await ctx.send("📌 الفائدة:\n"
+                       "• `#pov-scenarios` – يزيد التفاعل اليومي\n"
+                       "• `#اقتباسات-مضحكة` – محتوى تراثي للسيرفر\n"
+                       "• `#وش-تصير-لو` – نقاشات طويلة\n"
+                       "• `#rate-my-xxx` – مشاركة صور ومقاطع")
+    else:
+        await ctx.send("✅ جميع الرومات الفكاهية موجودة مسبقاً")
 
 # ==================== تشغيل البوت ====================
 if __name__ == "__main__":

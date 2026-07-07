@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 server_data.json
 .env
+discloud.config
+*.zip
+vc_bot.py
